@@ -308,75 +308,72 @@ class CSVDataset(Dataset):
 
 
 def collater(data):
-
     imgs = [s['img'] for s in data]
     annots = [s['annot'] for s in data]
     scales = [s['scale'] for s in data]
-        
-    widths = [int(s.shape[0]) for s in imgs]
-    heights = [int(s.shape[1]) for s in imgs]
+    
+    # Find max height and width from the Tensors
+    max_height = max(s.shape[1] for s in imgs)
+    max_width = max(s.shape[2] for s in imgs)
     batch_size = len(imgs)
 
-    max_width = np.array(widths).max()
-    max_height = np.array(heights).max()
-
-    padded_imgs = torch.zeros(batch_size, max_width, max_height, 3)
+    # Create a padded image tensor
+    padded_imgs = torch.zeros(batch_size, 3, max_height, max_width)
 
     for i in range(batch_size):
         img = imgs[i]
-        padded_imgs[i, :int(img.shape[0]), :int(img.shape[1]), :] = img
+        padded_imgs[i, :, :img.shape[1], :img.shape[2]] = img
 
     max_num_annots = max(annot.shape[0] for annot in annots)
     
     if max_num_annots > 0:
-
         annot_padded = torch.ones((len(annots), max_num_annots, 5)) * -1
-
-        if max_num_annots > 0:
-            for idx, annot in enumerate(annots):
-                if annot.shape[0] > 0:
-                    annot_padded[idx, :annot.shape[0], :] = annot
+        for idx, annot in enumerate(annots):
+            if annot.shape[0] > 0:
+                annot_padded[idx, :annot.shape[0], :] = annot
     else:
         annot_padded = torch.ones((len(annots), 1, 5)) * -1
 
-
-    padded_imgs = padded_imgs.permute(0, 3, 1, 2)
-
+    # The image tensor is already in the correct (B, C, H, W) format
     return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales}
 
 class Resizer(object):
-    """Convert ndarrays in sample to Tensors."""
+    """Resizes a numpy image and its annotations, and converts them to Tensors."""
 
     def __call__(self, sample, min_side=608, max_side=1024):
-        image, annots = sample['img'], sample['annot']
+        image, annots, scale = sample['img'], sample['annot'], sample.get('scale', 1.0)
 
         rows, cols, cns = image.shape
-
         smallest_side = min(rows, cols)
-
-        # rescale the image so the smallest side is min_side
-        scale = min_side / smallest_side
-
-        # check if the largest side is now greater than max_side, which can happen
-        # when images have a large aspect ratio
+        scale_factor = min_side / smallest_side
         largest_side = max(rows, cols)
 
-        if largest_side * scale > max_side:
-            scale = max_side / largest_side
+        if largest_side * scale_factor > max_side:
+            scale_factor = max_side / largest_side
+        
+        # Resize using skimage, keeping it as a numpy array for now
+        image_resized = skimage.transform.resize(
+            image, 
+            (int(round(rows * scale_factor)), int(round(cols * scale_factor))),
+            preserve_range=True, # Important: keeps the 0-255 range
+            mode='constant'
+        ).astype(np.float32)
 
-        # resize the image with the computed scale
-        image = skimage.transform.resize(image, (int(round(rows*scale)), int(round(cols*scale))))
-        rows, cols, cns = image.shape
+        rows, cols, cns = image_resized.shape
+        pad_w = 32 - rows % 32 if rows % 32 != 0 else 0
+        pad_h = 32 - cols % 32 if cols % 32 != 0 else 0
 
-        pad_w = 32 - rows%32
-        pad_h = 32 - cols%32
+        new_image = np.zeros((rows + pad_w, cols + pad_h, cns), dtype=np.float32)
+        new_image[:rows, :cols, :] = image_resized
 
-        new_image = np.zeros((rows + pad_w, cols + pad_h, cns)).astype(np.float32)
-        new_image[:rows, :cols, :] = image.astype(np.float32)
+        annots[:, :4] *= scale_factor
 
-        annots[:, :4] *= scale
-
-        return {'img': torch.from_numpy(new_image), 'annot': torch.from_numpy(annots), 'scale': scale}
+        # Convert to Tensors at the end of this step
+        return {
+            'img': torch.from_numpy(new_image), 
+            'annot': torch.from_numpy(annots), 
+            'scale': scale_factor
+        }
 
 
 # MODIFIED: Replaced the old Augmenter with a new powerful one using Albumentations
@@ -441,16 +438,31 @@ class Augmenter(object):
 
 
 class Normalizer(object):
-
+    """Normalizes a Tensor image."""
     def __init__(self):
-        self.mean = np.array([[[0.485, 0.456, 0.406]]])
-        self.std = np.array([[[0.229, 0.224, 0.225]]])
+        # Define mean and std as Tensors, not numpy arrays
+        # Use .view to make them broadcastable for (C, H, W) images
+        self.mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        self.std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
     def __call__(self, sample):
-        image, annots = sample['img'], sample['annot']
+        # The sample now contains Tensors
+        image, annots, scale = sample['img'], sample['annot'], sample['scale']
 
-        # MODIFIED: The image is now uint8, so we convert it to float32 before normalization
-        return {'img': ((image.astype(np.float32) / 255.0 - self.mean) / self.std), 'annot': annots}
+        # Ensure mean and std are on the same device as the image
+        # This is important for GPU usage
+        mean = self.mean.to(image.device)
+        std = self.std.to(image.device)
+
+        # Permute the image from (H, W, C) to (C, H, W) for PyTorch operations
+        image = image.permute(2, 0, 1)
+
+        # Perform normalization using PyTorch operations
+        # The image is already float32 from the Resizer
+        normalized_image = (image / 255.0 - mean) / std
+        
+        # The collater will handle the final batching
+        return {'img': normalized_image, 'annot': annots, 'scale': scale}
 
 
 class UnNormalizer(object):
