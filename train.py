@@ -49,7 +49,7 @@ def main(args=None):
         if parser.coco_path is None:
             raise ValueError('Must provide --coco_path when training on COCO,')
         dataset_train = CocoDataset(parser.coco_path, set_name='train2017',
-                                    transform=transforms.Compose([Normalizer(), Augmenter(), Resizer()]))
+                                    transform=transforms.Compose([Augmenter(), Resizer(), Normalizer()]))
         dataset_val = CocoDataset(parser.coco_path, set_name='val2017',
                                   transform=transforms.Compose([Normalizer(), Resizer()]))
     elif parser.dataset == 'csv':
@@ -58,7 +58,7 @@ def main(args=None):
         if parser.csv_classes is None:
             raise ValueError('Must provide --csv_classes when training on csv,')
         dataset_train = CSVDataset(train_file=parser.csv_train, class_list=parser.csv_classes,
-                                   transform=transforms.Compose([Normalizer(), Augmenter(), Resizer()]))
+                                   transform=transforms.Compose([Augmenter(), Resizer(), Normalizer()]))
         if parser.csv_val is None:
             dataset_val = None
             print('No validation annotations provided.')
