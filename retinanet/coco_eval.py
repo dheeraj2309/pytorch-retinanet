@@ -60,10 +60,14 @@ def evaluate_coco(dataset, model, threshold=0.05):
             image_ids.append(dataset.image_ids[index])
 
             # print progress
-            print('{}/{}'.format(index, len(dataset)), end='\r')
+            print('{}/{}'.format(index + 1, len(dataset)), end='\r')
 
+        # MODIFIED: Handle case with no detections
         if not len(results):
-            return
+            # Set model back to training mode before returning
+            model.train()
+            # Return a dictionary with a zero score
+            return {'map': 0.0}
 
         # write output
         json.dump(results, open('{}_bbox_results.json'.format(dataset.set_name), 'w'), indent=4)
@@ -79,6 +83,10 @@ def evaluate_coco(dataset, model, threshold=0.05):
         coco_eval.accumulate()
         coco_eval.summarize()
 
+        # Set model back to training mode before returning
         model.train()
 
-        return
+        # MODIFIED: Capture and return the primary mAP score
+        # The first value in coco_eval.stats is AP at IoU=0.50:0.95
+        main_map = coco_eval.stats[0]
+        return {'map': main_map}

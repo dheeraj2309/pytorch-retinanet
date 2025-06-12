@@ -142,7 +142,13 @@ def _get_annotations(generator):
 
         # copy detections to all_annotations
         for label in range(generator.num_classes()):
-            all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
+            # If there are annotations, select the ones for the current label
+            if annotations.shape[0] > 0:
+                all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
+            # If there are no annotations at all for this image, create an empty array
+            else:
+                all_annotations[i][label] = np.zeros((0, 4))
+
 
         print('{}/{}'.format(i + 1, len(generator)), end='\r')
 
@@ -166,7 +172,7 @@ def evaluate(
         max_detections  : The maximum number of detections to use per image.
         save_path       : The path to save precision recall curve of each label.
     # Returns
-        A dict mapping class names to mAP scores.
+        A dict containing the mAP score.
     """
 
 
@@ -233,27 +239,34 @@ def evaluate(
         average_precisions[label] = average_precision, num_annotations
 
 
-    print('\nmAP:')
+    print('\nPer-class AP:')
     for label in range(generator.num_classes()):
         label_name = generator.label_to_name(label)
         print('{}: {}'.format(label_name, average_precisions[label][0]))
-        print("Precision: ",precision[-1])
-        print("Recall: ",recall[-1])
         
-        if save_path!=None:
+        # MODIFIED: A small check for the plotting part
+        if save_path is not None and len(recall) > 0 and len(precision) > 0:
             plt.plot(recall,precision)
-            # naming the x axis 
             plt.xlabel('Recall') 
-            # naming the y axis 
             plt.ylabel('Precision') 
+            plt.title(f'Precision-Recall Curve for {label_name}') 
+            plt.savefig(os.path.join(save_path, label_name + '_precision_recall.jpg'))
+            plt.close() # Close the plot to prepare for the next one
 
-            # giving a title to my graph 
-            plt.title('Precision Recall curve') 
+    # MODIFIED: Calculate and print the overall mAP
+    present_classes = 0
+    map_sum = 0
+    for label in range(generator.num_classes()):
+        # Only include classes that have annotations in the mAP calculation
+        if average_precisions[label][1] > 0:
+            present_classes += 1
+            map_sum += average_precisions[label][0]
+    
+    mean_ap = map_sum / present_classes if present_classes > 0 else 0
+    print(f'\nmAP: {mean_ap:.4f}')
 
-            # function to show the plot
-            plt.savefig(save_path+'/'+label_name+'_precision_recall.jpg')
+    # Set model back to training mode
+    retinanet.train()
 
-
-
-    return average_precisions
-
+    # Return the mAP in a dictionary
+    return {'map': mean_ap}

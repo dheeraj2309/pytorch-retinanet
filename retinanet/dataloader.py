@@ -19,6 +19,10 @@ import skimage
 
 from PIL import Image
 
+# NEW: Import the albumentations library
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
 
 class CocoDataset(Dataset):
     """Coco dataset."""
@@ -78,7 +82,9 @@ class CocoDataset(Dataset):
         if len(img.shape) == 2:
             img = skimage.color.gray2rgb(img)
 
-        return img.astype(np.float32)/255.0
+        # MODIFIED: Albumentations works with uint8 images, so we don't divide by 255.0 here.
+        # The Normalizer will handle the conversion to float and division.
+        return img.astype(np.uint8) 
 
     def load_annotations(self, image_index):
         # get ground truth annotations
@@ -215,7 +221,9 @@ class CSVDataset(Dataset):
         if len(img.shape) == 2:
             img = skimage.color.gray2rgb(img)
 
-        return img.astype(np.float32)/255.0
+        # MODIFIED: Albumentations works with uint8 images, so we don't divide by 255.0 here.
+        # The Normalizer will handle the conversion to float and division.
+        return img.astype(np.uint8)
 
     def load_annotations(self, image_index):
         # get ground truth annotations
@@ -325,7 +333,6 @@ def collater(data):
 
         if max_num_annots > 0:
             for idx, annot in enumerate(annots):
-                #print(annot.shape)
                 if annot.shape[0] > 0:
                     annot_padded[idx, :annot.shape[0], :] = annot
     else:
@@ -357,7 +364,7 @@ class Resizer(object):
             scale = max_side / largest_side
 
         # resize the image with the computed scale
-        image = skimage.transform.resize(image, (int(round(rows*scale)), int(round((cols*scale)))))
+        image = skimage.transform.resize(image, (int(round(rows*scale)), int(round(cols*scale))))
         rows, cols, cns = image.shape
 
         pad_w = 32 - rows%32
@@ -371,28 +378,65 @@ class Resizer(object):
         return {'img': torch.from_numpy(new_image), 'annot': torch.from_numpy(annots), 'scale': scale}
 
 
+# MODIFIED: Replaced the old Augmenter with a new powerful one using Albumentations
 class Augmenter(object):
-    """Convert ndarrays in sample to Tensors."""
+    """
+    Apply a series of augmentations from the Albumentations library.
+    This handles both image and bounding box transformations.
+    """
+    def __init__(self):
+        # Define a composition of augmentations.
+        # p=0.5 means a 50% chance of applying the transformation.
+        self.transform = A.Compose([
+            # Geometric augmentations
+            A.HorizontalFlip(p=0.5),
+            A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=15, p=0.5, border_mode=cv2.BORDER_CONSTANT),
 
-    def __call__(self, sample, flip_x=0.5):
-
-        if np.random.rand() < flip_x:
-            image, annots = sample['img'], sample['annot']
-            image = image[:, ::-1, :]
-
-            rows, cols, channels = image.shape
-
-            x1 = annots[:, 0].copy()
-            x2 = annots[:, 2].copy()
+            # Color/photometric augmentations
+            A.RandomBrightnessContrast(p=0.5),
+            A.HueSaturationValue(p=0.5),
+            A.RGBShift(p=0.5),
             
-            x_tmp = x1.copy()
+            # Blur and noise
+            A.Blur(blur_limit=3, p=0.3),
+            A.GaussNoise(p=0.3),
 
-            annots[:, 0] = cols - x2
-            annots[:, 2] = cols - x_tmp
+            # Occlusion
+            A.CoarseDropout(max_holes=8, max_height=32, max_width=32, min_holes=1, min_height=8, min_width=8, p=0.3),
+        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'])) # 'pascal_voc' is [x_min, y_min, x_max, y_max]
 
-            sample = {'img': image, 'annot': annots}
+    def __call__(self, sample):
+        image, annots = sample['img'], sample['annot']
 
-        return sample
+        if annots.shape[0] == 0:
+            # No annotations to transform, just return the image
+            return {'img': image, 'annot': annots}
+
+        # Albumentations requires bboxes and class labels as separate arguments
+        bboxes = annots[:, :4]
+        class_labels = annots[:, 4]
+
+        try:
+            # Apply the transformations
+            transformed = self.transform(image=image, bboxes=bboxes, class_labels=class_labels)
+            
+            transformed_image = transformed['image']
+            transformed_bboxes = np.array(transformed['bboxes'])
+            transformed_class_labels = np.array(transformed['class_labels'])
+
+            if len(transformed_bboxes) == 0:
+                # If all bboxes were removed by the augmentation, return an empty annotation
+                transformed_annots = np.zeros((0, 5), dtype=np.float32)
+            else:
+                # Recombine the transformed bboxes and labels into the annotation format
+                transformed_annots = np.hstack((transformed_bboxes, transformed_class_labels.reshape(-1, 1)))
+            
+            return {'img': transformed_image, 'annot': transformed_annots}
+
+        except Exception as e:
+            print(f"Could not apply augmentations: {e}")
+            # If an error occurs, return the original sample
+            return {'img': image, 'annot': annots}
 
 
 class Normalizer(object):
@@ -402,10 +446,11 @@ class Normalizer(object):
         self.std = np.array([[[0.229, 0.224, 0.225]]])
 
     def __call__(self, sample):
-
         image, annots = sample['img'], sample['annot']
 
-        return {'img':((image.astype(np.float32)-self.mean)/self.std), 'annot': annots}
+        # MODIFIED: The image is now uint8, so we convert it to float32 before normalization
+        return {'img': ((image.astype(np.float32) / 255.0 - self.mean) / self.std), 'annot': annots}
+
 
 class UnNormalizer(object):
     def __init__(self, mean=None, std=None):
