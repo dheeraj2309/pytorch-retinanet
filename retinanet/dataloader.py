@@ -17,6 +17,7 @@ import skimage.transform
 import skimage.color
 import skimage
 
+import cv2
 from PIL import Image
 
 # NEW: Import the albumentations library
