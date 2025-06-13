@@ -165,25 +165,17 @@ def evaluate(
     save_path=None
 ):
     """ Evaluate a given dataset using a given retinanet.
-    # Arguments
-        generator       : The generator that represents the dataset to evaluate.
-        retinanet           : The retinanet to evaluate.
-        iou_threshold   : The threshold used to consider when a detection is positive or negative.
-        score_threshold : The score confidence threshold to use for detections.
-        max_detections  : The maximum number of detections to use per image.
-        save_path       : The path to save precision recall curve of each label.
     # Returns
-        A dict containing the mAP score.
+        A dict containing mAP, overall precision, and overall recall.
     """
-
-
-
-    # gather all detections and annotations
-
-    all_detections     = _get_detections(generator, retinanet, score_threshold=score_threshold, max_detections=max_detections, save_path=save_path)
+    all_detections     = _get_detections(generator, retinanet, score_threshold=score_threshold, max_detections=max_detections)
     all_annotations    = _get_annotations(generator)
-
     average_precisions = {}
+    
+    # NEW: Initialize variables for overall precision and recall calculation
+    total_true_positives = 0
+    total_false_positives = 0
+    total_annotations = 0
 
     for label in range(generator.num_classes()):
         false_positives = np.zeros((0,))
@@ -216,58 +208,61 @@ def evaluate(
                 else:
                     false_positives = np.append(false_positives, 1)
                     true_positives  = np.append(true_positives, 0)
+        
+        # NEW: Accumulate total true positives and false positives for this class
+        # This is based on the final number of TP and FP for this class at the given score_threshold
+        total_true_positives += np.sum(true_positives)
+        total_false_positives += np.sum(false_positives)
+        total_annotations += num_annotations
 
-        # no annotations -> AP for this class is 0 (is this correct?)
         if num_annotations == 0:
             average_precisions[label] = 0, 0
             continue
 
-        # sort by score
         indices         = np.argsort(-scores)
         false_positives = false_positives[indices]
         true_positives  = true_positives[indices]
 
-        # compute false positives and true positives
         false_positives = np.cumsum(false_positives)
         true_positives  = np.cumsum(true_positives)
 
-        # compute recall and precision
         recall    = true_positives / num_annotations
         precision = true_positives / np.maximum(true_positives + false_positives, np.finfo(np.float64).eps)
 
-        # compute average precision
         average_precision  = _compute_ap(recall, precision)
         average_precisions[label] = average_precision, num_annotations
 
-
+    # --- Calculation of Final Metrics ---
+    
     print('\nPer-class AP:')
-    for label in range(generator.num_classes()):
-        label_name = generator.label_to_name(label)
-        print('{}: {}'.format(label_name, average_precisions[label][0]))
-        
-        # MODIFIED: A small check for the plotting part
-        if save_path is not None and len(recall) > 0 and len(precision) > 0:
-            plt.plot(recall,precision)
-            plt.xlabel('Recall') 
-            plt.ylabel('Precision') 
-            plt.title(f'Precision-Recall Curve for {label_name}') 
-            plt.savefig(os.path.join(save_path, label_name + '_precision_recall.jpg'))
-            plt.close() # Close the plot to prepare for the next one
-
-    # MODIFIED: Calculate and print the overall mAP
     present_classes = 0
     map_sum = 0
     for label in range(generator.num_classes()):
-        # Only include classes that have annotations in the mAP calculation
-        if average_precisions[label][1] > 0:
+        label_name = generator.label_to_name(label)
+        print('{}: {}'.format(label_name, average_precisions[label][0]))
+        if average_precisions[label][1] > 0: # Only count classes present in the dataset
             present_classes += 1
             map_sum += average_precisions[label][0]
-    
-    mean_ap = map_sum / present_classes if present_classes > 0 else 0
-    print(f'\nmAP: {mean_ap:.4f}')
 
-    # Set model back to training mode
+    mean_ap = map_sum / present_classes if present_classes > 0 else 0
+    
+    # NEW: Calculate overall precision and recall
+    # Precision = TP / (TP + FP) -> How many of the predictions were correct?
+    # Recall = TP / (Total Ground Truth) -> How many of the actual objects were found?
+    overall_precision = total_true_positives / np.maximum(total_true_positives + total_false_positives, np.finfo(np.float64).eps)
+    overall_recall = total_true_positives / np.maximum(total_annotations, np.finfo(np.float64).eps)
+    
+    print(f'\n--- Summary (IoU Threshold: {iou_threshold}, Score Threshold: {score_threshold}) ---')
+    print(f'mAP: {mean_ap:.4f}')
+    print(f'Overall Precision: {overall_precision:.4f}')
+    print(f'Overall Recall: {overall_recall:.4f}')
+    print('----------------------------------------------------')
+    
     retinanet.train()
 
-    # Return the mAP in a dictionary
-    return {'map': mean_ap}
+    # MODIFIED: Return a dictionary with all the metrics
+    return {
+        'mAP': mean_ap,
+        'precision': overall_precision,
+        'recall': overall_recall
+    }
