@@ -7,6 +7,7 @@ import cv2
 import argparse
 import skimage.transform
 from IPython.display import display, Image
+from torchvision.ops import nms
 
 # We need the model definition and UnNormalizer
 from retinanet import model
@@ -30,7 +31,7 @@ def load_classes(csv_path):
     return classes, labels
 
 # --- Main function to process and visualize a single image ---
-def visualize_single_image(image_path, model_path, class_list_path, score_threshold=0.4):
+def visualize_single_image(image_path, model_path, class_list_path, score_threshold=0.4,nms_threshold=0.5):
     """
     Loads a model, processes a single image, runs inference, and RETURNS the annotated image.
     """
@@ -88,22 +89,66 @@ def visualize_single_image(image_path, model_path, class_list_path, score_thresh
         
     # --- 4. Draw Detections ---
     confident_indices = np.where(scores > score_threshold)[0]
+    scores = scores[confident_indices]
+    pred_labels = pred_labels[confident_indices]
+    pred_boxes = pred_boxes[confident_indices]
+
+    # This is the NMS loop
+    final_boxes = []
+    final_labels = []
+    final_scores = []
+
+    # NMS is applied on a per-class basis
+    for class_id in range(num_classes):
+        # Get all detections for the current class
+        class_indices = torch.where(pred_labels == class_id)[0]
+        
+        if len(class_indices) == 0:
+            continue
+            
+        class_boxes = pred_boxes[class_indices]
+        class_scores = scores[class_indices]
+        
+        # Apply Non-Max Suppression
+        # nms() returns the indices of the boxes to keep
+        keep_indices = nms(class_boxes, class_scores, iou_threshold=nms_threshold)
+        
+        # Store the kept boxes, labels, and scores
+        final_boxes.append(class_boxes[keep_indices])
+        final_labels.append(torch.full_like(class_scores[keep_indices], fill_value=class_id, dtype=torch.int))
+        final_scores.append(class_scores[keep_indices])
+
+    # Concatenate the results from all classes
+    if len(final_boxes) > 0:
+        pred_boxes = torch.cat(final_boxes, dim=0).numpy()
+        pred_labels = torch.cat(final_labels, dim=0).numpy()
+        scores = torch.cat(final_scores, dim=0).numpy()
+    else: # If no boxes were kept after NMS
+        pred_boxes, pred_labels, scores = np.array([]), np.array([]), np.array([])
     
     import matplotlib.pyplot as plt
     cmap = plt.colormaps.get_cmap('hsv')
     colors = (cmap(np.linspace(0, 1, num_classes))[:, :3] * 255).astype(np.uint8)
 
-    for j in confident_indices:
-        box, label_id, score = pred_boxes[j, :], pred_labels[j], scores[j]
-        class_name, color = labels[label_id], colors[label_id].tolist()
+    detection_count = len(pred_boxes)
+    print(f'Total detections after NMS: {detection_count}')
+    
+    # The loop now iterates over the CLEANED detections
+    for i in range(detection_count):
+        box, label_id, score = pred_boxes[i, :], pred_labels[i], scores[i]
+        
+        class_name = labels[label_id]
+        color = colors[label_id].tolist()
+        
         caption = f'{class_name} {score:.2f}'
+        
         x1, y1, x2, y2 = map(int, box / scale)
+        
         cv2.rectangle(image_orig, (x1, y1), (x2, y2), color=color, thickness=2)
         (w, h), _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
         cv2.rectangle(image_orig, (x1, y1 - h - 5), (x1 + w, y1), color, -1)
         cv2.putText(image_orig, caption, (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
     
-    # MODIFIED: Convert BGR to RGB and return the final annotated image
     return cv2.cvtColor(image_orig, cv2.COLOR_BGR2RGB)
 
 
