@@ -85,7 +85,7 @@ def visualize_single_image(image_path, model_path, class_list_path, score_thresh
     with torch.no_grad():
         input_tensor = normalized_image.to(device).float().unsqueeze(dim=0)
         scores, pred_labels, pred_boxes = retinanet(input_tensor)
-        scores, pred_labels, pred_boxes = scores.cpu().numpy(), pred_labels.cpu().numpy(), pred_boxes.cpu().numpy()
+        scores, pred_labels, pred_boxes = scores.cpu(), pred_labels.cpu(), pred_boxes.cpu()
         
     # --- 4. Draw Detections ---
     confident_indices = np.where(scores > score_threshold)[0]
@@ -120,11 +120,16 @@ def visualize_single_image(image_path, model_path, class_list_path, score_thresh
 
     # Concatenate the results from all classes
     if len(final_boxes) > 0:
-        pred_boxes = torch.cat(final_boxes, dim=0).numpy()
-        pred_labels = torch.cat(final_labels, dim=0).numpy()
-        scores = torch.cat(final_scores, dim=0).numpy()
+        pred_boxes_final = torch.cat(final_boxes, dim=0)
+        pred_labels_final = torch.cat(final_labels, dim=0)
+        scores_final = torch.cat(final_scores, dim=0)
+        
+        # MODIFIED: Convert to NumPy arrays AFTER NMS is fully complete
+        pred_boxes_final = pred_boxes_final.numpy()
+        pred_labels_final = pred_labels_final.numpy()
+        scores_final = scores_final.numpy()
     else: # If no boxes were kept after NMS
-        pred_boxes, pred_labels, scores = np.array([]), np.array([]), np.array([])
+        pred_boxes_final, pred_labels_final, scores_final = np.array([]), np.array([]), np.array([])
     
     import matplotlib.pyplot as plt
     cmap = plt.colormaps.get_cmap('hsv')
@@ -135,7 +140,7 @@ def visualize_single_image(image_path, model_path, class_list_path, score_thresh
     
     # The loop now iterates over the CLEANED detections
     for i in range(detection_count):
-        box, label_id, score = pred_boxes[i, :], pred_labels[i], scores[i]
+        box, label_id, score = pred_boxes_final[i, :], pred_labels_final[i], scores_final[i]
         
         class_name = labels[label_id]
         color = colors[label_id].tolist()
