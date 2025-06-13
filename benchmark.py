@@ -8,7 +8,8 @@ import skimage.transform # Import for resizing
 # Import necessary components from your project
 from retinanet import model
 from retinanet.dataloader import CSVDataset, CocoDataset # We no longer import Preprocess from here
-from pycocotools.coco import COCOeval
+from pycocotools.coco import COCO # Import COCO for loading annotations
+from pycocotools.cocoeval import COCOeval
 import json
 
 # =============================================================================
