@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from retinanet import coco_eval
 from retinanet import csv_eval
 import os # NEW: import os for path joining
+import csv
 
 # assert torch.__version__.split('.')[0] == '1'
 
@@ -107,6 +108,12 @@ def main(args=None):
     # NEW: Initialize variables for early stopping and best model saving
     best_metric = -1.0
     epochs_no_improve = 0
+
+    log_file_path = os.path.join(parser.checkpoint_path, 'training_log.csv')
+    log_file = open(log_file_path, 'w', newline='')
+    log_writer = csv.writer(log_file)
+    # Write header to the log file
+    log_writer.writerow(['epoch', 'training_loss', 'classification_loss', 'regression_loss', 'validation_map', 'learning_rate'])
     
     retinanet.train()
     retinanet.module.freeze_bn()
@@ -116,68 +123,90 @@ def main(args=None):
     for epoch_num in range(parser.epochs):
         retinanet.train()
         retinanet.module.freeze_bn()
+
         epoch_loss = []
+        epoch_cls_loss = []
+        epoch_reg_loss = []
         
         # Training loop
         for iter_num, data in enumerate(dataloader_train):
             try:
                 optimizer.zero_grad()
                 if torch.cuda.is_available():
-                    classification_loss, regression_loss = retinanet([data['img'].cuda().float(), data['annot']])
+                    classification_loss, regression_loss = retinanet([data['img'].cuda().float(), data['annot'].cuda()])
                 else:
                     classification_loss, regression_loss = retinanet([data['img'].float(), data['annot']])
+                    
                 classification_loss = classification_loss.mean()
                 regression_loss = regression_loss.mean()
                 loss = classification_loss + regression_loss
+
                 if bool(loss == 0):
                     continue
+
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(retinanet.parameters(), 0.1)
                 optimizer.step()
-                loss_hist.append(float(loss))
+
+                # Store losses for epoch average
                 epoch_loss.append(float(loss))
+                epoch_cls_loss.append(float(classification_loss))
+                epoch_reg_loss.append(float(regression_loss))
+
+                # Print running loss for the current iteration
                 print(
-                    'Epoch: {} | Iteration: {} | Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(
-                        epoch_num, iter_num, float(classification_loss), float(regression_loss), np.mean(loss_hist)), end='\r')
-                del classification_loss
-                del regression_loss
+                    'Epoch: {} | Iteration: {} | Cls Loss: {:1.5f} | Reg Loss: {:1.5f} | Total Loss: {:1.5f}'.format(
+                        epoch_num, iter_num, float(classification_loss), float(regression_loss), float(loss)), end='\r')
+                
             except Exception as e:
                 print(e)
                 continue
 
-        # Validation and model saving
-        current_metric = -1.0
-        if parser.dataset == 'coco' and dataset_val is not None:
-            print('\nEvaluating dataset')
-            eval_results = coco_eval.evaluate_coco(dataset_val, retinanet)
-            current_metric = eval_results['map']
-        elif parser.dataset == 'csv' and dataset_val is not None:
-            print('\nEvaluating dataset')
-            eval_results = csv_eval.evaluate(dataset_val, retinanet)
-            # Assuming csv_eval also returns a dict like {'map': ...}
-            current_metric = eval_results['map']
+        # --- End of Epoch: Validation and Logging ---
+        avg_train_loss = np.mean(epoch_loss)
+        avg_cls_loss = np.mean(epoch_cls_loss)
+        avg_reg_loss = np.mean(epoch_reg_loss)
         
-        # Pass the mean epoch loss to the scheduler
-        scheduler.step(np.mean(epoch_loss))
+        # Get current learning rate from optimizer
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        print(f"\n--- End of Epoch {epoch_num} ---")
+        print(f"Average Training Loss: {avg_train_loss:.5f} | Cls: {avg_cls_loss:.5f} | Reg: {avg_reg_loss:.5f}")
+        print(f"Current Learning Rate: {current_lr}")
 
-        # Save a checkpoint of the current epoch
-        epoch_checkpoint_path = os.path.join(parser.checkpoint_path, '{}_{}_retinanet_{}.pt'.format(parser.dataset, parser.backbone, epoch_num))
-        torch.save(retinanet.module.state_dict(), epoch_checkpoint_path)
+        # Validation
+        validation_map = -1.0
+        if dataset_val is not None:
+            print('Evaluating dataset...')
+            if parser.dataset == 'coco':
+                eval_results = coco_eval.evaluate_coco(dataset_val, retinanet)
+            else: # 'csv'
+                eval_results = csv_eval.evaluate(dataset_val, retinanet)
+            validation_map = eval_results['map']
+        
+        # NEW: Write logs for the completed epoch
+        log_writer.writerow([epoch_num, avg_train_loss, avg_cls_loss, avg_reg_loss, validation_map, current_lr])
+        log_file.flush() # Ensure data is written to the file immediately
 
-        # Early stopping and best model logic
-        if current_metric > best_metric:
-            best_metric = current_metric
+        scheduler.step(avg_train_loss)
+
+        # Early stopping and best model saving
+        if validation_map > best_metric:
+            best_metric = validation_map
             epochs_no_improve = 0
             best_model_path = os.path.join(parser.checkpoint_path, 'best_model.pt')
             torch.save(retinanet.module.state_dict(), best_model_path)
-            print(f"Validation metric improved to {best_metric:.4f}. Saved best model to {best_model_path}")
+            print(f"Validation mAP improved to {best_metric:.4f}. Saved best model.")
         else:
             epochs_no_improve += 1
-            print(f"Validation metric did not improve. Current: {current_metric:.4f}, Best: {best_metric:.4f}. Count: {epochs_no_improve}/{parser.early_stopping_patience}")
+            print(f"Validation mAP did not improve. Current: {validation_map:.4f}, Best: {best_metric:.4f}. Count: {epochs_no_improve}/{parser.early_stopping_patience}")
             if epochs_no_improve >= parser.early_stopping_patience:
-                print("Early stopping triggered. Training finished.")
+                print("--- Early stopping triggered. ---")
                 break
-
+    
+    # NEW: Close the log file at the end of training
+    log_file.close()
+    print("Training finished. Log file saved at:", log_file_path)
     # Final save of the model state (optional, as best model is already saved)
     final_model_path = os.path.join(parser.checkpoint_path, 'model_final.pt')
     retinanet.eval()
