@@ -1,185 +1,160 @@
-# pytorch-retinanet
+# RetinaNet with EfficientNet Backbone on Custom Datasets
 
-![img3](https://github.com/yhenon/pytorch-retinanet/blob/master/images/3.jpg)
-![img5](https://github.com/yhenon/pytorch-retinanet/blob/master/images/5.jpg)
+This project is an implementation and significant enhancement of an object detection model based on RetinaNet. It builds upon the foundational PyTorch implementation by [zylo117/pytorch-retinanet](https://github.com/zylo117/pytorch-retinanet) and introduces several major modifications to modernize the architecture, improve performance, and streamline the workflow for training and evaluation on custom datasets.
 
-Pytorch  implementation of RetinaNet object detection as described in [Focal Loss for Dense Object Detection](https://arxiv.org/abs/1708.02002) by Tsung-Yi Lin, Priya Goyal, Ross Girshick, Kaiming He and Piotr Dollár.
+The core of this project is a hybrid model that combines the powerful, lightweight **EfficientNet-B0** backbone with a Feature Pyramid Network (FPN) and the RetinaNet detection heads, trained with a Focal Loss function.
 
-This implementation is primarily designed to be easy to read and simple to modify.
 
-## Results
-Currently, this repo achieves 33.5% mAP at 600px resolution with a Resnet-50 backbone. The published result is 34.0% mAP. The difference is likely due to the use of Adam optimizer instead of SGD with weight decay.
+![BoundingBox predictions](images/image.png)
 
-## Installation
+## Major Modifications and Features
 
-1) Clone this repo
+This repository includes several key improvements over the original implementation:
 
-2) Install the required packages:
+1.  **EfficientNet Backbone**: Integrated `EfficientNet-B0` as a modern, high-performance alternative to the original ResNet backbones, using pre-trained ImageNet weights for effective feature extraction.
+2.  **Advanced Data Augmentation**: Replaced the basic augmenter with a powerful pipeline from the **Albumentations** library, including geometric transforms (ShiftScaleRotate), color jittering, noise, and robust occlusion handling (CoarseDropout).
+3.  **Robust Training and Evaluation Workflow**:
+    *   **Early Stopping**: Training automatically stops if the validation mAP does not improve for a set number of epochs, saving compute time and preventing overfitting.
+    *   **Best Model Saving**: The model checkpoint with the highest validation mAP is automatically saved as `best_model.pt`.
+    *   **CSV Logging**: Key training metrics (loss, mAP, learning rate) are saved to a `training_log.csv` after each epoch for easy analysis and plotting.
+4.  **Granular Model Freezing**: Added command-line flags (`--freeze_backbone`, `--freeze_fpn`, etc.) to allow for staged fine-tuning—a powerful technique for transfer learning.
+5.  **Comprehensive Evaluation**: The `csv_eval.py` script calculates and reports key performance metrics, including:
+    *   `mAP` (at a given IoU threshold)
+    *   Overall Precision
+    *   Overall Recall
+6.  **Notebook-Friendly Visualization**: Modernized visualization scripts (`visualize_single_image.py`) that are fully compatible with Jupyter/Kaggle notebooks, using `matplotlib` and `IPython.display` instead of `cv2.imshow()`.
+7.  **YOLO Format Support**: An evaluation script (`benchmark_yolo.py`) to correctly calculate metrics for validation sets annotated in the popular YOLO format (`.txt` files).
 
-```
-apt-get install tk-dev python-tk
-```
+## Setup and Installation
 
-3) Install the python packages:
-	
-```
-pip install pandas
-pip install pycocotools
-pip install opencv-python
-pip install requests
+### 1. Clone the Repository
+First, clone this repository to your local machine or Kaggle environment.
 
-```
-
-## Training
-
-The network can be trained using the `train.py` script. Currently, two dataloaders are available: COCO and CSV. For training on coco, use
-
-```
-python train.py --dataset coco --coco_path ../coco --depth 50
+```bash
+git clone https://github.com/dheeraj2309/pytorch-retinanet.git
+cd pytorch-retinanet
 ```
 
-For training using a custom dataset, with annotations in CSV format (see below), use
+### 2. Install Dependencies
+This project requires Python 3.8+ and several packages. You can install them all using `pip`. It is highly recommended to use a virtual environment.
 
-```
-python train.py --dataset csv --csv_train <path/to/train_annots.csv>  --csv_classes <path/to/train/class_list.csv>  --csv_val <path/to/val_annots.csv>
-```
+The following command installs PyTorch with CUDA 11.8 support, which is common on modern GPUs and cloud platforms like Kaggle. Adjust the CUDA version if needed.
 
-Note that the --csv_val argument is optional, in which case no validation will be performed.
+```bash
+# Install PyTorch 
+pip install torch torchvision torchaudio 
 
-## Pre-trained model
-
-A pre-trained model is available at: 
-- https://drive.google.com/open?id=1yLmjq3JtXi841yXWBxst0coAgR26MNBS (this is a pytorch state dict)
-
-The state dict model can be loaded using:
-
-```
-retinanet = model.resnet50(num_classes=dataset_train.num_classes(),)
-retinanet.load_state_dict(torch.load(PATH_TO_WEIGHTS))
+# Install other required packages
+pip install numpy pandas matplotlib scikit-image opencv-python pycocotools albumentations
 ```
 
-## Validation
-
-Run `coco_validation.py` to validate the code on the COCO dataset. With the above model, run:
-
-`python coco_validation.py --coco_path ~/path/to/coco --model_path /path/to/model/coco_resnet_50_map_0_335_state_dict.pt`
-
-
-This produces the following results:
-
+Alternatively, you can create a `requirements.txt` file and install from it:
 ```
- Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.335
- Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.499
- Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.357
- Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.167
- Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.369
- Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.466
- Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.282
- Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.429
- Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.458
- Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.255
- Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.508
- Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.597
+# requirements.txt
+torch
+torchvision
+numpy
+pandas
+matplotlib
+scikit-image
+opencv-python
+pycocotools
+albumentations
 ```
+And run `pip install -r requirements.txt`.
 
-For CSV Datasets (more info on those below), run the following script to validate:
+## How to Use
 
-`python csv_validation.py --csv_annotations_path path/to/annotations.csv --model_path path/to/model.pt --images_path path/to/images_dir --class_list_path path/to/class_list.csv   (optional) iou_threshold iou_thres (0<iou_thresh<1) `
+### 1. Data Preparation (CSV Format)
 
-It produces following resullts:
+This project is designed to work seamlessly with custom datasets in a simple CSV format.
 
-```
-label_1 : (label_1_mAP)
-Precision :  ...
-Recall:  ...
+**a) The Class File (`--csv_classes`)**
+Create a file (e.g., `classes.csv`) that maps your class names to integer IDs, starting from 0.
+*Format: `class_name,id`*
 
-label_2 : (label_2_mAP)
-Precision :  ...
-Recall:  ...
+```csv
+# Example: classes.csv
+car,0
+person,1
+truck,2
 ```
 
-You can also configure csv_eval.py script to save the precision-recall curve on disk.
+**b) The Annotations File (`--csv_train` or `--csv_val`)**
+Create a file containing your bounding box annotations. The image paths should be absolute or relative to where you run the script.
+*Format: `path/to/image.jpg,x1,y1,x2,y2,class_name`*
 
+*   `(x1, y1)`: top-left corner pixel coordinates.
+*   `(x2, y2)`: bottom-right corner pixel coordinates.
 
-
-## Visualization
-
-To visualize the network detection, use `visualize.py`:
-
-```
-python visualize.py --dataset coco --coco_path ../coco --model <path/to/model.pt>
-```
-This will visualize bounding boxes on the validation set. To visualise with a CSV dataset, use:
-
-```
-python visualize.py --dataset csv --csv_classes <path/to/train/class_list.csv>  --csv_val <path/to/val_annots.csv> --model <path/to/model.pt>
+```csv
+# Example: annotations.csv
+data/train/img_01.jpg,112,150,340,400,car
+data/train/img_01.jpg,450,80,600,350,person
+data/train/img_02.jpg,88,92,550,580,truck
 ```
 
-## Model
+### 2. Training a Model
 
-The retinanet model uses a resnet backbone. You can set the depth of the resnet model using the --depth argument. Depth must be one of 18, 34, 50, 101 or 152. Note that deeper models are more accurate but are slower and use more memory.
+Use the `train.py` script to train your model. The following is a recommended command for a first run.
 
-## CSV datasets
-The `CSVGenerator` provides an easy way to define your own datasets.
-It uses two CSV files: one file containing annotations and one file containing a class name to ID mapping.
-
-### Annotations format
-The CSV file with annotations should contain one annotation per line.
-Images with multiple bounding boxes should use one row per bounding box.
-Note that indexing for pixel values starts at 0.
-The expected format of each line is:
-```
-path/to/image.jpg,x1,y1,x2,y2,class_name
-```
-
-Some images may not contain any labeled objects.
-To add these images to the dataset as negative examples,
-add an annotation where `x1`, `y1`, `x2`, `y2` and `class_name` are all empty:
-```
-path/to/image.jpg,,,,,
+```bash
+python train.py \
+    --dataset csv \
+    --csv_train /path/to/your/train_annotations.csv \
+    --csv_val /path/to/your/val_annotations.csv \
+    --csv_classes /path/to/your/classes.csv \
+    --backbone efficientnet-b0 \
+    --epochs 50 \
+    --checkpoint_path checkpoints/my_first_run \
+    --early_stopping_patience 10
 ```
 
-A full example:
-```
-/data/imgs/img_001.jpg,837,346,981,456,cow
-/data/imgs/img_002.jpg,215,312,279,391,cat
-/data/imgs/img_002.jpg,22,5,89,84,bird
-/data/imgs/img_003.jpg,,,,,
+**Key Training Arguments:**
+*   `--backbone`: Choose the model backbone (`efficientnet-b0`, `resnet50`, etc.).  
+*   `--epochs`: Maximum number of training epochs.  
+*   `--checkpoint_path`: Directory to save model checkpoints and logs.  
+*   `--early_stopping_patience`: Stop training if validation mAP doesn't improve for this many epochs.  
+*   `--freeze_backbone`: (Optional) Freeze backbone weights and only train the FPN and detection heads. Ideal for an initial training stage.  
+
+### 3. Evaluating Model Performance (Qualitative Analysis)
+
+Use the `csv_validation.py` script to get a full performance report on your validation set.  
+
+```bash
+python csv_validation.py \
+    --model_path /path/to/your/checkpoints/my_first_run/best_model.pt \
+    --csv_annotations /path/to/your/val_annotations.csv \
+    --class_list /path/to/your/classes.csv \
+    --iou_threshold 0.5 \
+    --score_threshold 0.5
 ```
 
-This defines a dataset with 3 images.
-`img_001.jpg` contains a cow.
-`img_002.jpg` contains a cat and a bird.
-`img_003.jpg` contains no interesting objects/animals.
+This will output a summary of the key metrics based on the specified thresholds.
 
+### 4. Visualizing Detections (Qualitative Analysis)
 
-### Class mapping format
-The class name to ID mapping file should contain one mapping per line.
-Each line should use the following format:
-```
-class_name,id
-```
+Use the `visualize_single_image.py` script to see your model's predictions on individual images. This is excellent for qualitative analysis and debugging. This script is designed to be imported and run from a Jupyter/Kaggle notebook.
 
-Indexing for classes starts at 0.
-Do not include a background class as it is implicit.
+**Example Notebook Cell:**
+```python
+from visualize_single_image import visualize_single_image
 
-For example:
-```
-cow,0
-cat,1
-bird,2
+# Define paths and parameters
+IMAGE_TO_TEST = '/path/to/your/test_image.jpg'
+CLASSES_FILE = '/path/to/your/classes.csv'
+MODEL_FILE = '/path/to/your/checkpoints/my_first_run/best_model.pt'
+SCORE_THRESHOLD = 0.5
+
+# Run the visualization
+visualize_single_image(
+    image_path=IMAGE_TO_TEST,
+    model_path=MODEL_FILE,
+    class_list_path=CLASSES_FILE,
+    score_threshold=SCORE_THRESHOLD
+)
 ```
 
 ## Acknowledgements
 
-- Significant amounts of code are borrowed from the [keras retinanet implementation](https://github.com/fizyr/keras-retinanet)
-- The NMS module used is from the [pytorch faster-rcnn implementation](https://github.com/ruotianluo/pytorch-faster-rcnn)
-
-## Examples
-
-![img1](https://github.com/yhenon/pytorch-retinanet/blob/master/images/1.jpg)
-![img2](https://github.com/yhenon/pytorch-retinanet/blob/master/images/2.jpg)
-![img4](https://github.com/yhenon/pytorch-retinanet/blob/master/images/4.jpg)
-![img6](https://github.com/yhenon/pytorch-retinanet/blob/master/images/6.jpg)
-![img7](https://github.com/yhenon/pytorch-retinanet/blob/master/images/7.jpg)
-![img8](https://github.com/yhenon/pytorch-retinanet/blob/master/images/8.jpg)
+This project is based on the work from [zylo117/pytorch-retinanet](https://github.com/zylo117/pytorch-retinanet). Many thanks to the original author for providing a clean and understandable implementation.
