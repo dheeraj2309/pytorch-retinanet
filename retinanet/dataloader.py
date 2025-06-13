@@ -308,16 +308,15 @@ class CSVDataset(Dataset):
 
 
 def collater(data):
+    # 'data' is a list of dictionaries, each with 'img', 'annot', 'scale'
     imgs = [s['img'] for s in data]
     annots = [s['annot'] for s in data]
-    scales = [s['scale'] for s in data]
+    scales = [s['scale'] for s in data] # Extract scales from each dictionary
     
-    # Find max height and width from the Tensors
     max_height = max(s.shape[1] for s in imgs)
     max_width = max(s.shape[2] for s in imgs)
     batch_size = len(imgs)
 
-    # Create a padded image tensor
     padded_imgs = torch.zeros(batch_size, 3, max_height, max_width)
 
     for i in range(batch_size):
@@ -334,14 +333,14 @@ def collater(data):
     else:
         annot_padded = torch.ones((len(annots), 1, 5)) * -1
 
-    # The image tensor is already in the correct (B, C, H, W) format
-    return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales}
+    return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales} # Return scales as a list
 
 class Resizer(object):
-    """Resizes a numpy image and its annotations, and converts them to Tensors."""
+    """Resizes a numpy image and its annotations, adds scale, and converts to Tensors."""
 
     def __call__(self, sample, min_side=608, max_side=1024):
-        image, annots, scale = sample['img'], sample['annot'], sample.get('scale', 1.0)
+        # The initial sample only has 'img' and 'annot'
+        image, annots = sample['img'], sample['annot']
 
         rows, cols, cns = image.shape
         smallest_side = min(rows, cols)
@@ -351,11 +350,10 @@ class Resizer(object):
         if largest_side * scale_factor > max_side:
             scale_factor = max_side / largest_side
         
-        # Resize using skimage, keeping it as a numpy array for now
         image_resized = skimage.transform.resize(
             image, 
             (int(round(rows * scale_factor)), int(round(cols * scale_factor))),
-            preserve_range=True, # Important: keeps the 0-255 range
+            preserve_range=True,
             mode='constant'
         ).astype(np.float32)
 
@@ -367,12 +365,12 @@ class Resizer(object):
         new_image[:rows, :cols, :] = image_resized
 
         annots[:, :4] *= scale_factor
-
-        # Convert to Tensors at the end of this step
+        
+        # This class ADDS the 'scale' key to the dictionary for the next step.
         return {
             'img': torch.from_numpy(new_image), 
             'annot': torch.from_numpy(annots), 
-            'scale': scale_factor
+            'scale': scale_factor  # Add the scale here
         }
 
 
@@ -438,33 +436,26 @@ class Augmenter(object):
 
 
 class Normalizer(object):
-    """Normalizes a Tensor image."""
+    """Normalizes a Tensor image. Expects a dictionary with 'img', 'annot', and 'scale'."""
     def __init__(self):
-        # Define mean and std as Tensors, not numpy arrays
-        # Use .view to make them broadcastable for (C, H, W) images
         self.mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
         self.std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
     def __call__(self, sample):
-        # The sample now contains Tensors
+        # This class now reliably receives 'img', 'annot', and 'scale' from the Resizer
         image, annots, scale = sample['img'], sample['annot'], sample['scale']
 
-        # Ensure mean and std are on the same device as the image
-        # This is important for GPU usage
         mean = self.mean.to(image.device)
         std = self.std.to(image.device)
-
-        # Permute the image from (H, W, C) to (C, H, W) for PyTorch operations
+        
+        # Permute from (H, W, C) to (C, H, W)
         image = image.permute(2, 0, 1)
 
-        # Perform normalization using PyTorch operations
-        # The image is already float32 from the Resizer
         normalized_image = (image / 255.0 - mean) / std
         
-        # The collater will handle the final batching
+        # Pass the whole dictionary along, including the scale
         return {'img': normalized_image, 'annot': annots, 'scale': scale}
-
-
+    
 class UnNormalizer(object):
     def __init__(self, mean=None, std=None):
         if mean == None:
