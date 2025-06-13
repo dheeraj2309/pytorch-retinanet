@@ -2,24 +2,75 @@ import numpy as np
 import torchvision
 import time
 import os
-import copy
 import argparse
 import cv2
 import torch
-# import matplotlib.pyplot as plt # We don't need matplotlib for display anymore, but keep for colors
-
-# NEW: Import the necessary IPython display functions
+import skimage.transform # We need this for resizing
 from IPython.display import display, Image
 
-# Import the necessary classes from your project structure
-# In a Kaggle notebook, you would have cloned your repo first
+# Import necessary classes from your project structure
 from retinanet import model
-from retinanet.dataloader import CSVDataset, Preprocess, UnNormalizer
+from retinanet.dataloader import CSVDataset, UnNormalizer
+
+# To avoid duplicating code and ensure consistency, we create a Preprocess class
+# for visualization that mirrors the Resizer -> Normalizer pipeline from your training validation set.
+class Preprocess(object):
+    """
+    A self-contained class for validation/inference pre-processing.
+    It mimics the Resizer -> Normalizer chain to ensure data is handled identically.
+    """
+    def __init__(self, min_side=608, max_side=1024):
+        self.min_side = min_side
+        self.max_side = max_side
+        self.mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        self.std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+    def __call__(self, sample):
+        # 1. Unpack initial sample {'img': np.array, 'annot': np.array}
+        image, annots = sample['img'], sample['annot']
+
+        # --- Resizer Logic ---
+        rows, cols, cns = image.shape
+        smallest_side = min(rows, cols)
+        scale_factor = self.min_side / smallest_side
+        largest_side = max(rows, cols)
+
+        if largest_side * scale_factor > self.max_side:
+            scale_factor = self.max_side / largest_side
+        
+        image_resized = skimage.transform.resize(
+            image, 
+            (int(round(rows * scale_factor)), int(round(cols * scale_factor))),
+            preserve_range=True, mode='constant'
+        ).astype(np.float32)
+
+        rows, cols, cns = image_resized.shape
+        pad_w = 32 - rows % 32 if rows % 32 != 0 else 0
+        pad_h = 32 - cols % 32 if cols % 32 != 0 else 0
+
+        new_image_padded = np.zeros((rows + pad_w, cols + pad_h, cns), dtype=np.float32)
+        new_image_padded[:rows, :cols, :] = image_resized
+        
+        annots[:, :4] *= scale_factor
+        
+        image_tensor = torch.from_numpy(new_image_padded)
+        annot_tensor = torch.from_numpy(annots)
+
+        # --- Normalizer Logic ---
+        image_tensor = image_tensor.permute(2, 0, 1) # Permute to (C, H, W)
+        normalized_image = (image_tensor / 255.0 - self.mean) / self.std
+
+        # 4. Return the final dictionary, just like the training pipeline
+        return {
+            'img': normalized_image,
+            'annot': annot_tensor,
+            'scale': scale_factor
+        }
 
 def visualize(args):
     # --- 1. SETUP ---
     print('Loading dataset...')
-    # Use the robust Preprocess class for consistent data handling
+    # Use our new Preprocess class for consistent data handling
     dataset_val = CSVDataset(
         train_file=args.csv_val, 
         class_list=args.csv_classes, 
@@ -28,38 +79,29 @@ def visualize(args):
 
     print('Loading model...')
     # Create an instance of your model architecture
-    # Make sure the backbone and num_classes match the saved model
     retinanet = model.efficientnet_b0_retinanet(num_classes=dataset_val.num_classes())
     
     # Load the saved weights (state_dict) into the model
+    # Use map_location to ensure it loads correctly whether on CPU or GPU
     state_dict = torch.load(args.model, map_location=torch.device('cpu'))
     retinanet.load_state_dict(state_dict)
     
     # Set up device
-    use_gpu = True
-    if use_gpu and torch.cuda.is_available():
-        device = torch.device('cuda')
-        retinanet = retinanet.to(device)
-    else:
-        device = torch.device('cpu')
-
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    retinanet = retinanet.to(device)
     retinanet.eval()
-    print('Model and dataset loaded.')
+    print(f'Model and dataset loaded. Using device: {device}')
 
     # --- 2. VISUALIZATION ---
     unnormalize = UnNormalizer()
     
-    # Define colors for bounding boxes
-    # We can still use matplotlib's colormap functionality to generate colors
+    # Generate a unique color for each class
     import matplotlib.pyplot as plt
     colors = plt.cm.get_cmap('hsv', dataset_val.num_classes()).colors
     colors = (np.array(colors) * 255).astype(np.uint8)
 
-    # Loop for a specific number of images
     for i in range(args.num_images):
-        # Get a sample from the validation set
         data = dataset_val[i]
-        
         detection_count = 0
 
         with torch.no_grad():
@@ -81,12 +123,9 @@ def visualize(args):
             img = data['img'].cpu()
             img = unnormalize(img)
             img = img.permute(1, 2, 0).numpy() # Permute to (H, W, C)
-            
-            # Convert to a format that OpenCV can use for drawing (uint8 BGR)
-            # OpenCV works with BGR, but we need RGB for final display. We'll convert back later.
             img = cv2.cvtColor(np.clip(img * 255, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
 
-            # Draw ground truth boxes (optional)
+            # Draw ground truth boxes in GREEN
             if data['annot'].shape[0] > 0:
                 print('Ground Truth Boxes:')
                 for gt_box in data['annot']:
@@ -96,7 +135,6 @@ def visualize(args):
                     cv2.rectangle(img, (x1_gt, y1_gt), (x2_gt, y2_gt), color=(0, 255, 0), thickness=2)
 
             print('Detected Boxes:')
-            # Draw detected boxes
             for j in confident_indices:
                 detection_count += 1
                 box = boxes[j, :]
@@ -118,27 +156,18 @@ def visualize(args):
 
             print(f'Total detections on this image: {detection_count}')
             
-            # --- NEW: Display using IPython.display ---
-            # 1. Convert the final image (which is in BGR format from OpenCV) back to RGB.
+            # Display using IPython.display
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            # 2. Encode the image to a format that can be displayed (like PNG).
             _, img_encoded = cv2.imencode('.png', img_rgb)
-            
-            # 3. Display the image directly in the notebook output.
             display(Image(data=img_encoded.tobytes()))
 
 
-# This is how you would run it in a script.
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Script for visualizing RetinaNet detections.')
-    
     parser.add_argument('--csv_classes', help='Path to file containing class list')
     parser.add_argument('--csv_val', help='Path to file containing validation annotations')
     parser.add_argument('--model', help='Path to model state_dict (.pt) file')
-    
     parser.add_argument('--num_images', help='Number of images to visualize', type=int, default=10)
     parser.add_argument('--score_threshold', help='Confidence score threshold for detections', type=float, default=0.5)
-
     args = parser.parse_args()
     visualize(args)
