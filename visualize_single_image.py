@@ -88,7 +88,7 @@ def visualize_single_image(image_path, model_path, class_list_path, score_thresh
         scores, pred_labels, pred_boxes = scores.cpu(), pred_labels.cpu(), pred_boxes.cpu()
         
     # --- 4. Draw Detections ---
-    confident_indices = np.where(scores > score_threshold)[0]
+    confident_indices = torch.where(scores > score_threshold)[0]
     scores = scores[confident_indices]
     pred_labels = pred_labels[confident_indices]
     pred_boxes = pred_boxes[confident_indices]
