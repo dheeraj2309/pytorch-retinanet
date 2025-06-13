@@ -86,9 +86,9 @@ def visualize_single_image(image_path, model_path, class_list_path, score_thresh
         
     # --- 4. Post-Process Detections with NMS (using Tensors) ---
     confident_indices = torch.where(scores > score_threshold)[0]
-    
+    print(type(confident_indices))
     scores = scores[confident_indices]
-    pred_labels = pred_labels[confident_indices]
+    pred_labels = torch.tensor(pred_labels[confident_indices])
     pred_boxes = pred_boxes[confident_indices]
 
     final_boxes = []
@@ -97,6 +97,7 @@ def visualize_single_image(image_path, model_path, class_list_path, score_thresh
 
     for class_id in range(num_classes):
         # This will now work because pred_labels is a Tensor
+        print(type(pred_labels))
         class_indices = torch.where(pred_labels == class_id)[0]
         
         if len(class_indices) == 0:
@@ -149,7 +150,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Simple script for visualizing result of training on a single image.')
     parser.add_argument('--image_path', help='Path to a single image file')
     parser.add_argument('--model_path', help='Path to model state_dict')
-    parser.add_-argument('--class_list', help='Path to CSV file listing class names')
+    parser.add_argument('--class_list', help='Path to CSV file listing class names')
     parser.add_argument('--threshold', help='Score threshold for detections', type=float, default=0.4)
     args = parser.parse_args()
 
