@@ -64,7 +64,7 @@ def main(args=None):
             print('No validation annotations provided.')
         else:
             dataset_val = CSVDataset(train_file=parser.csv_val, class_list=parser.csv_classes,
-                                     transform=transforms.Compose([Normalizer(), Resizer()]))
+                                     transform=transforms.Compose([Resizer(), Normalizer()]))
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
