@@ -12,6 +12,7 @@ from IPython.display import display, Image
 from retinanet import model
 from retinanet.dataloader import CSVDataset, UnNormalizer
 
+
 # To avoid duplicating code and ensure consistency, we create a Preprocess class
 # for visualization that mirrors the Resizer -> Normalizer pipeline from your training validation set.
 class Preprocess(object):
@@ -97,9 +98,21 @@ def visualize(args):
     
     # Generate a unique color for each class
     import matplotlib.pyplot as plt
-    colors = plt.cm.get_cmap('hsv', dataset_val.num_classes()).colors
-    colors = (np.array(colors) * 255).astype(np.uint8)
-
+    import matplotlib.colors as mcolors # Good practice to import this
+    
+    # 1. Get the colormap object
+    cmap = plt.colormaps.get_cmap('hsv') # Use the new, recommended function
+    
+    # 2. Create an array of N equally spaced points between 0 and 1
+    num_classes = dataset_val.num_classes()
+    color_indices = np.linspace(0, 1, num_classes)
+    
+    # 3. Call the colormap with these points to get the RGBA colors
+    # The output will be (N, 4) with R, G, B, Alpha channels
+    rgba_colors = cmap(color_indices)
+    
+    # 4. We only need the RGB channels, so we slice the array and scale to 0-255
+    colors = (rgba_colors[:, :3] * 255).astype(np.uint8)
     for i in range(args.num_images):
         data = dataset_val[i]
         detection_count = 0
