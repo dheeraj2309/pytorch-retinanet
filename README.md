@@ -23,7 +23,6 @@ This repository includes several key improvements over the original implementati
     *   Overall Precision
     *   Overall Recall
 6.  **Notebook-Friendly Visualization**: Modernized visualization scripts (`visualize_single_image.py`) that are fully compatible with Jupyter/Kaggle notebooks, using `matplotlib` and `IPython.display` instead of `cv2.imshow()`.
-7.  **YOLO Format Support**: An evaluation script (`benchmark_yolo.py`) to correctly calculate metrics for validation sets annotated in the popular YOLO format (`.txt` files).
 
 ## Setup and Installation
 
