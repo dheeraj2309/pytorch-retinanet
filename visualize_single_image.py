@@ -101,6 +101,7 @@ def visualize_single_image(image_path, model_path, class_list_path, score_thresh
     # NMS is applied on a per-class basis
     for class_id in range(num_classes):
         # Get all detections for the current class
+        print(type(pred_labels))
         class_indices = torch.where(pred_labels == class_id)[0]
         
         if len(class_indices) == 0:
