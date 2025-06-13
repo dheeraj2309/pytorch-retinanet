@@ -5,128 +5,160 @@ import os
 import csv
 import cv2
 import argparse
+import skimage.transform
+from IPython.display import display, Image
 
+# We need the model definition and UnNormalizer
+from retinanet import model
+from retinanet.dataloader import UnNormalizer
 
-def load_classes(csv_reader):
-    result = {}
-
-    for line, row in enumerate(csv_reader):
-        line += 1
-
-        try:
-            class_name, class_id = row
-        except ValueError:
-            raise(ValueError('line {}: format should be \'class_name,class_id\''.format(line)))
-        class_id = int(class_id)
-
-        if class_name in result:
-            raise ValueError('line {}: duplicate class name: \'{}\''.format(line, class_name))
-        result[class_name] = class_id
-    return result
-
-
-# Draws a caption above the box in an image
-def draw_caption(image, box, caption):
-    b = np.array(box).astype(int)
-    cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 0), 2)
-    cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 1)
-
-
-def detect_image(image_path, model_path, class_list):
-
-    with open(class_list, 'r') as f:
-        classes = load_classes(csv.reader(f, delimiter=','))
-
+# --- Helper function to load classes ---
+def load_classes(csv_path):
+    classes = {}
     labels = {}
-    for key, value in classes.items():
-        labels[value] = key
+    with open(csv_path, 'r') as f:
+        reader = csv.reader(f, delimiter=',')
+        for line, row in enumerate(reader):
+            try:
+                class_name, class_id = row
+            except ValueError:
+                raise ValueError(f'line {line+1}: format should be \'class_name,class_id\'')
+            
+            class_id = int(class_id)
+            classes[class_name] = class_id
+            labels[class_id] = class_name
+    return classes, labels
 
-    model = torch.load(model_path)
+# --- Main function to process and visualize a single image ---
+def visualize_single_image(image_path, model_path, class_list_path, score_threshold=0.4):
+    """
+    Loads a model, processes a single image, runs inference, and displays the result.
+    """
+    # --- 1. Load Classes and Model ---
+    print("Loading classes and model...")
+    classes, labels = load_classes(class_list_path)
+    num_classes = len(classes)
+    
+    # Create a model instance
+    retinanet = model.efficientnet_b0_retinanet(num_classes=num_classes)
+    
+    # Load the saved weights (state_dict)
+    state_dict = torch.load(model_path, map_location=torch.device('cpu'))
+    retinanet.load_state_dict(state_dict)
+    
+    # Set up device and eval mode
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    retinanet = retinanet.to(device)
+    retinanet.eval()
+    print(f"Model loaded on {device}.")
 
-    if torch.cuda.is_available():
-        model = model.cuda()
+    # --- 2. Load and Pre-process the Image ---
+    # Load the original image for drawing boxes on later
+    image_orig = cv2.imread(image_path)
+    if image_orig is None:
+        print(f"Error: Could not read image at {image_path}")
+        return
 
-    model.training = False
-    model.eval()
+    # Convert from BGR (OpenCV default) to RGB for pre-processing
+    image_rgb = cv2.cvtColor(image_orig, cv2.COLOR_BGR2RGB)
+    
+    # --- Manual Pre-processing (mimicking the Preprocess class) ---
+    # Resizing
+    rows, cols, cns = image_rgb.shape
+    min_side = 608
+    max_side = 1024
+    smallest_side = min(rows, cols)
+    scale = min_side / smallest_side
+    largest_side = max(rows, cols)
 
-    for img_name in os.listdir(image_path):
+    if largest_side * scale > max_side:
+        scale = max_side / largest_side
+        
+    image_resized = skimage.transform.resize(
+        image_rgb, 
+        (int(round(rows * scale)), int(round(cols * scale))),
+        preserve_range=True, mode='constant'
+    ).astype(np.float32)
 
-        image = cv2.imread(os.path.join(image_path, img_name))
-        if image is None:
-            continue
-        image_orig = image.copy()
+    rows, cols, cns = image_resized.shape
+    pad_w = 32 - rows % 32 if rows % 32 != 0 else 0
+    pad_h = 32 - cols % 32 if cols % 32 != 0 else 0
+    
+    new_image_padded = np.zeros((rows + pad_w, cols + pad_h, cns), dtype=np.float32)
+    new_image_padded[:rows, :cols, :] = image_resized
 
-        rows, cols, cns = image.shape
+    # Normalization and Tensor Conversion
+    image_tensor = torch.from_numpy(new_image_padded)
+    image_tensor = image_tensor.permute(2, 0, 1) # To (C, H, W)
+    
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    normalized_image = (image_tensor / 255.0 - mean) / std
 
-        smallest_side = min(rows, cols)
+    # --- 3. Run Inference ---
+    with torch.no_grad():
+        st = time.time()
+        
+        # Add batch dimension and send to device
+        input_tensor = normalized_image.to(device).float().unsqueeze(dim=0)
+        
+        # Get model output: [scores, labels, boxes]
+        scores, pred_labels, pred_boxes = retinanet(input_tensor)
+        
+        # Move results to CPU
+        scores = scores.cpu().numpy()
+        pred_labels = pred_labels.cpu().numpy()
+        pred_boxes = pred_boxes.cpu().numpy()
+        
+        print(f'Elapsed time: {time.time() - st:.4f}s')
 
-        # rescale the image so the smallest side is min_side
-        min_side = 608
-        max_side = 1024
-        scale = min_side / smallest_side
+    # --- 4. Visualize Detections ---
+    # Filter out low-confidence detections
+    confident_indices = np.where(scores > score_threshold)[0]
+    
+    # Generate distinct colors for each class
+    import matplotlib.pyplot as plt
+    cmap = plt.colormaps.get_cmap('hsv')
+    colors = (cmap(np.linspace(0, 1, num_classes))[:, :3] * 255).astype(np.uint8)
 
-        # check if the largest side is now greater than max_side, which can happen
-        # when images have a large aspect ratio
-        largest_side = max(rows, cols)
+    detection_count = 0
+    print('Detected Boxes:')
+    for j in confident_indices:
+        detection_count += 1
+        box = pred_boxes[j, :]
+        label_id = pred_labels[j]
+        score = scores[j]
+        
+        class_name = labels[label_id]
+        color = colors[label_id].tolist()
+        
+        caption = f'{class_name} {score:.2f}'
+        print(f'  - {caption}')
 
-        if largest_side * scale > max_side:
-            scale = max_side / largest_side
+        # The predicted boxes are for the *resized* image. We need to scale them back.
+        x1, y1, x2, y2 = map(int, box / scale)
+        
+        # Draw on the original, un-resized image
+        cv2.rectangle(image_orig, (x1, y1), (x2, y2), color=color, thickness=2)
+        
+        (w, h), _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+        cv2.rectangle(image_orig, (x1, y1 - h - 5), (x1 + w, y1), color, -1)
+        cv2.putText(image_orig, caption, (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # resize the image with the computed scale
-        image = cv2.resize(image, (int(round(cols * scale)), int(round((rows * scale)))))
-        rows, cols, cns = image.shape
-
-        pad_w = 32 - rows % 32
-        pad_h = 32 - cols % 32
-
-        new_image = np.zeros((rows + pad_w, cols + pad_h, cns)).astype(np.float32)
-        new_image[:rows, :cols, :] = image.astype(np.float32)
-        image = new_image.astype(np.float32)
-        image /= 255
-        image -= [0.485, 0.456, 0.406]
-        image /= [0.229, 0.224, 0.225]
-        image = np.expand_dims(image, 0)
-        image = np.transpose(image, (0, 3, 1, 2))
-
-        with torch.no_grad():
-
-            image = torch.from_numpy(image)
-            if torch.cuda.is_available():
-                image = image.cuda()
-
-            st = time.time()
-            print(image.shape, image_orig.shape, scale)
-            scores, classification, transformed_anchors = model(image.cuda().float())
-            print('Elapsed time: {}'.format(time.time() - st))
-            idxs = np.where(scores.cpu() > 0.5)
-
-            for j in range(idxs[0].shape[0]):
-                bbox = transformed_anchors[idxs[0][j], :]
-
-                x1 = int(bbox[0] / scale)
-                y1 = int(bbox[1] / scale)
-                x2 = int(bbox[2] / scale)
-                y2 = int(bbox[3] / scale)
-                label_name = labels[int(classification[idxs[0][j]])]
-                print(bbox, classification.shape)
-                score = scores[j]
-                caption = '{} {:.3f}'.format(label_name, score)
-                # draw_caption(img, (x1, y1, x2, y2), label_name)
-                draw_caption(image_orig, (x1, y1, x2, y2), caption)
-                cv2.rectangle(image_orig, (x1, y1), (x2, y2), color=(0, 0, 255), thickness=2)
-
-            cv2.imshow('detections', image_orig)
-            cv2.waitKey(0)
+    print(f'Total detections on this image: {detection_count}')
+    
+    # Display using IPython.display
+    img_rgb_final = cv2.cvtColor(image_orig, cv2.COLOR_BGR2RGB)
+    _, img_encoded = cv2.imencode('.png', img_rgb_final)
+    display(Image(data=img_encoded.tobytes()))
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Simple script for visualizing result of training on a single image.')
+    parser.add_argument('--image_path', help='Path to a single image file')
+    parser.add_argument('--model_path', help='Path to model state_dict')
+    parser.add_argument('--class_list', help='Path to CSV file listing class names')
+    parser.add_argument('--threshold', help='Score threshold for detections', type=float, default=0.4)
+    args = parser.parse_args()
 
-    parser = argparse.ArgumentParser(description='Simple script for visualizing result of training.')
-
-    parser.add_argument('--image_dir', help='Path to directory containing images')
-    parser.add_argument('--model_path', help='Path to model')
-    parser.add_argument('--class_list', help='Path to CSV file listing class names (see README)')
-
-    parser = parser.parse_args()
-
-    detect_image(parser.image_dir, parser.model_path, parser.class_list)
+    visualize_single_image(args.image_path, args.model_path, args.class_list, args.threshold)
