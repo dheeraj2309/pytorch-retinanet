@@ -456,6 +456,59 @@ class Normalizer(object):
         # Pass the whole dictionary along, including the scale
         return {'img': normalized_image, 'annot': annots, 'scale': scale}
     
+class Preprocess(object):
+    """
+    A self-contained class for validation/inference pre-processing.
+    It handles resizing, normalization, and tensor conversion consistently
+    by mimicking the Resizer -> Normalizer chain.
+    """
+    def __init__(self, min_side=608, max_side=1024):
+        self.min_side = min_side
+        self.max_side = max_side
+        self.mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        self.std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+    def __call__(self, sample):
+        # 1. Unpack initial sample {'img': np.array, 'annot': np.array}
+        image, annots = sample['img'], sample['annot']
+
+        # 2. Perform Resizing
+        rows, cols, cns = image.shape
+        smallest_side = min(rows, cols)
+        scale_factor = self.min_side / smallest_side
+        largest_side = max(rows, cols)
+
+        if largest_side * scale_factor > self.max_side:
+            scale_factor = self.max_side / largest_side
+        
+        image_resized = skimage.transform.resize(
+            image, 
+            (int(round(rows * scale_factor)), int(round(cols * scale_factor))),
+            preserve_range=True, mode='constant'
+        ).astype(np.float32)
+
+        rows, cols, cns = image_resized.shape
+        pad_w = 32 - rows % 32 if rows % 32 != 0 else 0
+        pad_h = 32 - cols % 32 if cols % 32 != 0 else 0
+
+        new_image_padded = np.zeros((rows + pad_w, cols + pad_h, cns), dtype=np.float32)
+        new_image_padded[:rows, :cols, :] = image_resized
+        
+        annots[:, :4] *= scale_factor
+        
+        # 3. Perform Normalization and Tensor Conversion
+        image_tensor = torch.from_numpy(new_image_padded)
+        annot_tensor = torch.from_numpy(annots)
+
+        image_tensor = image_tensor.permute(2, 0, 1)
+        normalized_image = (image_tensor / 255.0 - self.mean) / self.std
+
+        # 4. Return the final dictionary
+        return {
+            'img': normalized_image,
+            'annot': annot_tensor,
+            'scale': scale_factor
+        }
 class UnNormalizer(object):
     def __init__(self, mean=None, std=None):
         if mean == None:
