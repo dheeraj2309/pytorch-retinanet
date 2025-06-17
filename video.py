@@ -82,16 +82,13 @@ def run_video_detection(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Load class labels from the provided CSV file
     class_labels = _load_class_labels(args.csv_classes)
     if class_labels is None:
-        return # Exit if class file fails to load
+        return
     num_classes = len(class_labels)
 
-    # Initialize the RetinaNet model architecture
     detector = retinanet_model.efficientnet_b0_retinanet(num_classes=num_classes)
     
-    # Load the trained model weights
     try:
         detector.load_state_dict(torch.load(args.model_path, map_location=device))
     except FileNotFoundError:
@@ -99,7 +96,6 @@ def run_video_detection(args):
         return
     except RuntimeError as e:
         print(f"Error loading model weights: {e}")
-        print("This might be because the number of classes in the CSV does not match the model architecture.")
         return
 
     detector = detector.to(device)
@@ -130,6 +126,10 @@ def run_video_detection(args):
             if not ret:
                 break
 
+            # --- MODIFICATION START: Initialize vehicle count for the frame ---
+            vehicle_count = 0
+            # --- MODIFICATION END ---
+            
             frame_count += 1
             if frame_count % args.nth_frame != 0:
                 out.write(frame)
@@ -146,6 +146,12 @@ def run_video_detection(args):
             
             confident_indices = torch.where(scores > args.score_threshold)[0]
             
+            # --- MODIFICATION START: Update vehicle count based on detections ---
+            # We assume your model is trained on a single "vehicle" class or similar.
+            # If you have multiple classes (car, truck, bus), they will all be counted.
+            vehicle_count = len(confident_indices)
+            # --- MODIFICATION END ---
+            
             for i in confident_indices:
                 box = boxes[i]
                 label_id = labels[i].item()
@@ -153,8 +159,8 @@ def run_video_detection(args):
                 
                 x1, y1, x2, y2 = map(int, box)
                 
-                class_name = class_labels.get(label_id, f"ID:{label_id}") # Safely get name
-                color = colors[label_id % num_classes].tolist() # Safely get color
+                class_name = class_labels.get(label_id, f"ID:{label_id}")
+                color = colors[label_id % num_classes].tolist()
                 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 
@@ -166,6 +172,25 @@ def run_video_detection(args):
             end_time = time.time()
             processing_fps = 1.0 / (end_time - start_time) if (end_time - start_time) > 0 else float('inf')
             
+            # --- MODIFICATION START: Draw the counter on the frame ---
+            counter_text = f"Vehicles Detected: {vehicle_count}"
+            text_size, _ = cv2.getTextSize(counter_text, cv2.FONT_HERSHEY_TRIPLEX, 1, 2)
+            text_w, text_h = text_size
+            
+            # Position in the top-right corner
+            text_x = width - text_w - 20 # 20 pixels padding from the right edge
+            text_y = text_h + 20        # 20 pixels padding from the top edge
+            
+            # Draw a semi-transparent background rectangle for better readability
+            sub_img = frame[text_y - text_h - 10:text_y + 10, text_x - 10:text_x + text_w + 10]
+            white_rect = np.ones(sub_img.shape, dtype=np.uint8) * 255
+            res = cv2.addWeighted(sub_img, 0.5, white_rect, 0.5, 1.0)
+            frame[text_y - text_h - 10:text_y + 10, text_x - 10:text_x + text_w + 10] = res
+            
+            # Draw the text
+            cv2.putText(frame, counter_text, (text_x, text_y), cv2.FONT_HERSHEY_TRIPLEX, 1, (0, 0, 0), 2)
+            # --- MODIFICATION END ---
+
             print(f"Processing Frame {frame_count}/{total_frames} | Detections: {len(confident_indices)} | FPS: {processing_fps:.2f}")
             out.write(frame)
 
@@ -177,12 +202,10 @@ def run_video_detection(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run RetinaNet detection on a video using separate model and class files.')
     
-    # Required arguments
     parser.add_argument('--model_path', type=str, required=True, help='Path to the trained RetinaNet model weights file (.pt).')
     parser.add_argument('--csv_classes', type=str, required=True, help='Path to the CSV file mapping class names to IDs (e.g., car,0).')
     parser.add_argument('--video_path', type=str, required=True, help='Path to the input video file.')
     
-    # Optional arguments
     parser.add_argument('--output_path', type=str, default='output_detection.mp4', help='Path to save the output video.')
     parser.add_argument('--score_threshold', type=float, default=0.5, help='Confidence score threshold for showing detections.')
     parser.add_argument('--nth_frame', type=int, default=1, help='Process every N-th frame for faster inference. Default is 1 (every frame).')
